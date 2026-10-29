@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2024-2025 Advanced Micro Devices, Inc. All rights reserved.
+add_library(aiebu_asm_objects OBJECT
+  asm.cpp
+  ${AIEBU_SOURCE_DIR}/src/cpp/utils/target/target.cpp
+  )
+
+# Remove globle includes in case of submodule XRT as there are conflicts
+# in version.h and utils.h
+set_target_properties(aiebu_asm_objects PROPERTIES
+  INCLUDE_DIRECTORIES ""  # Clear inherited dirs
+  )
+
+target_include_directories(aiebu_asm_objects
+  PRIVATE
+  ${AIEBU_SOURCE_DIR}/src/cpp
+  ${AIEBU_SOURCE_DIR}/src/cpp/include
+  ${Boost_INCLUDE_DIRS}
+
+  # these should be spelled out in source code
+  ${AIEBU_SOURCE_DIR}/src/cpp/assembler
+  ${AIEBU_SOURCE_DIR}/src/cpp/common
+  ${AIEBU_SOURCE_DIR}/src/cpp/utils/target
+  ${AIEBU_SOURCE_DIR}/src/cpp/cxxopts/include
+  ${AIEBU_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}/gen
+  )
+
+add_executable(aiebu-asm $<TARGET_OBJECTS:aiebu_asm_objects>)
+target_link_libraries(aiebu-asm PRIVATE aiebu_static)
+
+if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+  target_link_libraries(aiebu-asm PRIVATE pthread)
+
+  # Upstreaming does not allow statically linked executables.  AIEBU_UPSTREAM is
+  # set by projects that are built for upstreaming and includes AIEBU as a
+  # submodule
+  if (NOT AIEBU_UPSTREAM)
+    # GCC 16's C compiler reports gcc_s_asneeded as an implicit link library.
+    # CMake merges implicit libs from all languages in the link graph; since
+    # libaiebu.a contains C objects (zstd), it adds CMAKE_C_IMPLICIT_LINK_LIBRARIES
+    # which includes gcc_s_asneeded by its literal name, producing -lgcc_s_asneeded.
+    # That flag is fatal with -static because libgcc_s_asneeded.a does not exist.
+    # Remove it here; -static-libgcc folds libgcc into the binary directly.
+    list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES gcc_s_asneeded)
+    target_link_options(aiebu-asm PRIVATE "-static" "-static-libgcc" "-static-libstdc++")
+    set_target_properties(aiebu-asm PROPERTIES INSTALL_RPATH "" BUILD_RPATH "")
+
+    # Create a dynamically linked executable. aiebu-asm-dyn, on Linux for running
+    # valgrind, etc. This binary is not released for deployment but only used for
+    # internal testing. Note that valgrind known to report many glibc related
+    # errors when running with fully statically linked executables, hence the
+    # dynamically linked binary for testing
+    add_executable(aiebu-asm-dyn $<TARGET_OBJECTS:aiebu_asm_objects>)
+    target_link_libraries(aiebu-asm-dyn PRIVATE aiebu_static)
+  endif()
+endif()
+
+# This custom target fails if aiebu-asm has any dynamic dependencies
+if (NOT AIEBU_UPSTREAM)
+  add_custom_target(asm_check_dynamic_deps ALL
+    COMMAND ${CMAKE_COMMAND} -E echo "Checking for dynamic dependencies ..."
+    COMMAND ${CMAKE_COMMAND} -P "${AIEBU_SOURCE_DIR}/cmake/depends.cmake" $<TARGET_FILE:aiebu-asm> aiebu-asm_depends.txt
+    DEPENDS aiebu-asm
+    )
+endif()
+
+install(TARGETS aiebu-asm
+  RUNTIME DESTINATION ${AIEBU_INSTALL_BIN_DIR}
+  CONFIGURATIONS Debug Release RelWithDebInfo
+  COMPONENT ${AIEBU_COMPONENT}
+  )
+

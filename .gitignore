@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2024-2025 Advanced Micro Devices, Inc. All rights reserved.
+*.o
+*~
+*.log
+build/Debug*
+build/Release*
+__pycache__
+compile_commands.json
+*.swp
+*.elf

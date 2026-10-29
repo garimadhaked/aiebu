@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+
+#ifndef _ADSM_OPS_OPARG_H_
+#define _ADSM_OPS_OPARG_H_
+
+#include <vector>
+#include <string>
+#include "utils.h"
+
+namespace aiebu {
+
+class opArg
+{
+public:
+  enum class optype: uint8_t
+  {
+    CONST = 0,
+    REG = 1,
+    PAD = 2,
+    JOBSIZE = 3,
+    BARRIER = 4,
+    PAGE_ID = 5,
+    CONSTVAL = 6,
+  };
+
+  std::string m_name;
+  optype m_type;
+  uint8_t m_width;
+  uint32_t m_const_value = 0;
+
+  opArg(std::string name, optype type, uint8_t width): m_name(name), m_type(type), m_width(width) { }
+  opArg(std::string name, optype type, uint8_t width, uint32_t const_value)
+    : m_name(name), m_type(type), m_width(width), m_const_value(const_value) { }
+  HEADER_ACCESS_GET_SET(std::string, name);
+  HEADER_ACCESS_GET_SET(optype, type);
+  HEADER_ACCESS_GET_SET(uint8_t, width);
+};
+
+}
+
+#endif //_ADSM_OPS_OPARG_H_

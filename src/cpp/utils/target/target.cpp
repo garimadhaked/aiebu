@@ -1,0 +1,509 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2024-2026 Advanced Micro Devices, Inc. All rights reserved.
+
+#include <iostream>
+#include <limits>
+#include <boost/format.hpp>
+
+#include <cxxopts.hpp>
+
+#include "target.h"
+#include "utils.h"
+#include "file_utils.h"
+#include "logger.h"
+
+std::map<uint32_t, std::vector<char> >
+aiebu::utilities::
+target_aie2blob::parse_pmctrlpkt(const std::vector<std::string> pm_key_value_pairs)
+{
+  std::map<uint32_t, std::vector<char> > mappmctrl;
+
+  for (const auto& kv : pm_key_value_pairs) {
+//    std::cout << "-->" << kv << "\n";
+    size_t pos = kv.find(':');
+    if (pos == std::string::npos) {
+      auto errMsg = boost::format("Invalid key:value pair: %s in pmctrl\n") % kv ;
+      throw std::runtime_error(errMsg.str());
+    }
+    std::string key = kv.substr(0, pos);
+    uint32_t ikey = 0;
+    try {
+      uint64_t num = std::stoul(key);
+      // stoul not throwing out_of_range if value overflowing
+      if (num > std::numeric_limits<uint32_t>::max() || num < std::numeric_limits<uint32_t>::min())
+        throw std::out_of_range("Value is out of range for uint32_t");
+      ikey = static_cast<uint32_t>(num);
+    } catch (const std::invalid_argument& e) {
+      throw std::runtime_error(e.what());
+    } catch (const std::out_of_range& e) {
+      throw std::runtime_error(e.what());
+    }
+
+    std::string value = kv.substr(pos + 1);
+    std::vector<char> buffer;
+    readfile(value, buffer);
+    mappmctrl[ikey] = buffer;
+  }
+  return mappmctrl;
+}
+
+bool
+aiebu::utilities::
+target_aie2blob::parseOption(const sub_cmd_options &options)
+{
+  std::vector<std::string> pm_key_value_pairs;
+  cxxopts::Options all_options("Target aie2blob Options", m_description);
+
+  try {
+    all_options.add_options()
+            ("o,outputelf", "ELF output file name", cxxopts::value<decltype(m_output_elffile)>())
+            ("c,controlcode", "TXN control code binary or ASM file", cxxopts::value<decltype(m_transaction_file)>())
+            ("p,controlpkt", "Control packet binary", cxxopts::value<decltype(m_controlpkt_file)>())
+            ("j,json", "control packet Patching json file", cxxopts::value<decltype(m_external_buffers_file)>())
+            ("l,lib", "linked libs (also supports loglevel_error, loglevel_warn, loglevel_info, loglevel_debug)", cxxopts::value<decltype(m_libs)>())
+            ("L,libpath", "libs path", cxxopts::value<decltype(m_libpaths)>())
+            ("m,pmctrl", "pm ctrlpkt <id>:<file>", cxxopts::value<decltype(pm_key_value_pairs)>())
+            ("r,report", "Generate Report", cxxopts::value<bool>()->default_value("false"))
+            ("h,help", "show help message and exit", cxxopts::value<bool>()->default_value("false"))
+    ;
+
+    auto char_ver = aiebu::utilities::vector_of_string_to_vector_of_char(options);
+
+    auto result = all_options.parse(static_cast<int>(char_ver.size()), char_ver.data());
+
+    if (result.count("help")) {
+      std::cout << all_options.help({"", "Target aie2blob Options"});
+      return false;
+    }
+
+    if (result.count("outputelf"))
+      m_output_elffile = result["outputelf"].as<decltype(m_output_elffile)>();
+    else
+      throw std::runtime_error("the option '--outputelf' is required but missing\n");
+
+    if (result.count("controlcode"))
+      m_transaction_file = result["controlcode"].as<decltype(m_transaction_file)>();
+
+    if (result.count("controlpkt"))
+      m_controlpkt_file = result["controlpkt"].as<decltype(m_controlpkt_file)>();
+
+    if (result.count("json"))
+      m_external_buffers_file = result["json"].as<decltype(m_external_buffers_file)>();
+
+    if (result.count("lib"))
+      m_libs = result["lib"].as<decltype(m_libs)>();
+
+    if (result.count("libpath"))
+      m_libpaths = result["libpath"].as<decltype(m_libpaths)>();
+
+    if (result.count("pmctrl"))
+      pm_key_value_pairs = result["pmctrl"].as<decltype(pm_key_value_pairs)>();
+
+    if (result.count("report"))
+      m_print_report = result["report"].as<decltype(m_print_report)>();
+
+  }
+  catch (const cxxopts::exceptions::exception& e) {
+    std::cout << all_options.help({"", "Target aie2blob Options"});
+    auto errMsg = boost::format("Error parsing options: %s\n") % e.what() ;
+    throw std::runtime_error(errMsg.str());
+  }
+
+  if (!m_transaction_file.empty())
+    readfile(m_transaction_file, m_transaction_buffer);
+
+  m_ctrlpkt = parse_pmctrlpkt(pm_key_value_pairs);
+
+  if (!m_controlpkt_file.empty())
+    readfile(m_controlpkt_file, m_control_packet_buffer);
+
+  if (!m_external_buffers_file.empty())
+    readfile(m_external_buffers_file, m_patch_data_buffer);
+
+  return true;
+}
+
+void
+aiebu::utilities::
+target_aie2blob_dpu::assemble(const sub_cmd_options &options)
+{
+  if (!parseOption(options))
+    return;
+
+  try {
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::blob_instr_dpu,
+                              m_transaction_buffer, m_control_packet_buffer, m_patch_data_buffer,
+                              m_libs, m_libpaths);
+    write_elf(as, m_output_elffile);
+    if (m_print_report)
+      as.get_report(std::cout);
+  } catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+void
+aiebu::utilities::
+target_aie2blob_transaction::assemble(const sub_cmd_options &options)
+{
+  if (!parseOption(options))
+    return;
+
+  try {
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::blob_instr_transaction,
+                              m_transaction_buffer, m_control_packet_buffer, m_patch_data_buffer,
+                              m_libs, m_libpaths, m_ctrlpkt);
+    write_elf(as, m_output_elffile);
+    if (!m_print_report)
+      return;
+
+    as.get_report(std::cout);
+    std::filesystem::path root_path(m_output_elffile);
+    root_path.replace_extension();
+    as.disassemble(root_path);
+  } catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+void
+aiebu::utilities::
+target_aie2::assemble(const sub_cmd_options &options)
+{
+  if (!parseOption(options))
+    return;
+
+  try {
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::asm_aie2,
+                              m_transaction_buffer, m_control_packet_buffer, m_patch_data_buffer,
+                              m_libs, m_libpaths, m_ctrlpkt);
+    write_elf(as, m_output_elffile);
+
+    if (!m_print_report)
+      return;
+
+    as.get_report(std::cout);
+    std::filesystem::path root_path(m_output_elffile);
+    root_path.replace_extension();
+    as.disassemble(root_path);
+  } catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+void
+aiebu::utilities::
+target_aie2ps::assemble(const sub_cmd_options &options)
+{
+  std::string output_elffile;
+  std::string input_file;
+  std::string external_buffers_file;
+  std::vector<std::string> libpaths;
+  std::vector<std::string> flags;
+  cxxopts::Options all_options("Target aie2ps Options", m_description);
+
+  try {
+    all_options.add_options()
+            ("outputelf,o", "ELF output file name", cxxopts::value<decltype(output_elffile)>())
+            ("asm,c", "ASM File", cxxopts::value<decltype(input_file)>())
+            ("j,json", "control packet Patching json file", cxxopts::value<decltype(external_buffers_file)>())
+            ("L,libpath", "libs path", cxxopts::value<decltype(libpaths)>())
+            ("f,flag", "flags (e.g., 'disabledump', 'fulldump', 'loglevel_error', 'loglevel_warn', 'loglevel_info', 'loglevel_debug')", cxxopts::value<decltype(flags)>())
+            ("help,h", "show help message and exit", cxxopts::value<bool>()->default_value("false"))
+    ;
+
+    auto char_ver = aiebu::utilities::vector_of_string_to_vector_of_char(options);
+    auto result = all_options.parse(static_cast<int>(char_ver.size()), char_ver.data());
+
+    if (result.count("help")) {
+      std::cout << all_options.help({"", "Target aie2ps Options"});
+      return;
+    }
+
+    if (result.count("outputelf"))
+      output_elffile = result["outputelf"].as<decltype(output_elffile)>();
+    else
+    {
+      throw std::runtime_error("the option '--outputelf' is required but missing\n");
+    }
+
+    if (result.count("asm"))
+      input_file = result["asm"].as<decltype(input_file)>();
+    else
+    {
+      throw std::runtime_error("the option '--asm' is required but missing\n");
+    }
+
+    if (result.count("flag"))
+      flags = result["flag"].as<decltype(flags)>();
+
+    if (result.count("libpath"))
+      libpaths = result["libpath"].as<decltype(libpaths)>();
+
+    if (result.count("json"))
+      external_buffers_file = result["json"].as<decltype(external_buffers_file)>();
+
+  }
+  catch (const cxxopts::exceptions::exception& e) {
+    std::cout << all_options.help({"", "Target aie2ps Options"});
+    auto errMsg = boost::format("Error parsing options: %s\n") % e.what() ;
+    throw std::runtime_error(errMsg.str());
+  }
+
+  std::vector<char> asmBuffer;
+  readfile(input_file, asmBuffer);
+
+
+  std::vector<char> patch_data_buffer;
+  if (!external_buffers_file.empty())
+    readfile(external_buffers_file, patch_data_buffer);
+
+  try {
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::asm_aie2ps, asmBuffer, flags, libpaths, patch_data_buffer);
+    write_elf(as, output_elffile);
+  } catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+void
+aiebu::utilities::
+target_aie2_config::assemble(const sub_cmd_options &options)
+{
+  std::string output_elffile;
+  std::string json_file;
+  std::vector<std::string> libpaths;
+  std::vector<std::string> flags;
+  cxxopts::Options all_options("Target aie2 config Options", m_description);
+
+  try {
+    all_options.add_options()
+            ("o,outputelf", "ELF output file name", cxxopts::value<decltype(output_elffile)>())
+            ("j,json", "control packet Patching json file", cxxopts::value<decltype(json_file)>())
+            ("f,flag", "flags (e.g., 'loglevel_error', 'loglevel_warn', 'loglevel_info', 'loglevel_debug')", cxxopts::value<decltype(flags)>())
+            ("h,help", "show help message and exit", cxxopts::value<bool>()->default_value("false"))
+    ;
+
+
+    auto char_ver = aiebu::utilities::vector_of_string_to_vector_of_char(options);
+
+    auto result = all_options.parse(static_cast<int>(char_ver.size()), char_ver.data());
+
+    if (result.count("help")) {
+      std::cout << all_options.help({"", "Target aie2 config Options"});
+      return;
+    }
+
+    if (result.count("outputelf"))
+      output_elffile = result["outputelf"].as<decltype(output_elffile)>();
+    else
+      throw std::runtime_error("the option '--outputelf' is required but missing\n");
+
+    if (result.count("json"))
+      json_file = result["json"].as<decltype(json_file)>();
+
+    if (result.count("flag"))
+      flags = result["flag"].as<decltype(flags)>();
+  }
+  catch (const cxxopts::exceptions::exception& e) {
+    std::cout << all_options.help({"", "Target config Options"});
+    auto errMsg = boost::format("Error parsing options: %s\n") % e.what() ;
+    throw std::runtime_error(errMsg.str());
+  }
+
+  std::vector<char> json_buffer;
+  if (!json_file.empty())
+  {
+    readfile(json_file, json_buffer);
+    libpaths.push_back(get_parent_directory(json_file));
+  }
+
+  try {
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::aie2_config, {}, flags, libpaths, json_buffer);
+    write_elf(as, output_elffile);
+  }
+  catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+void
+aiebu::utilities::
+target_aie4::assemble(const sub_cmd_options &_options)
+{
+  std::string output_elffile;
+  std::string input_file;
+  std::string external_buffers_file;
+  std::vector<std::string> libpaths;
+  std::vector<std::string> flags;
+
+  std::string options_name = "Target aie4 Options";
+  cxxopts::Options all_options(options_name, m_description);
+
+  try {
+    all_options.add_options()
+            ("outputelf,o", "ELF output file name", cxxopts::value<decltype(output_elffile)>())
+            ("asm,c", "ASM File", cxxopts::value<decltype(input_file)>())
+            ("j,json", "control packet Patching json file", cxxopts::value<decltype(external_buffers_file)>())
+            ("L,libpath", "libs path", cxxopts::value<decltype(libpaths)>())
+            ("f,flag", "flags (e.g., 'disabledump', 'fulldump', 'loglevel_error', 'loglevel_warn', 'loglevel_info', 'loglevel_debug')", cxxopts::value<decltype(flags)>())
+            ("help,h", "show help message and exit", cxxopts::value<bool>()->default_value("false"))
+    ;
+
+    auto char_ver = aiebu::utilities::vector_of_string_to_vector_of_char(_options);
+    auto result = all_options.parse(static_cast<int>(char_ver.size()), char_ver.data());
+
+    if (result.count("help")) {
+      std::cout << all_options.help({"", options_name});
+      return;
+    }
+
+    if (result.count("outputelf"))
+      output_elffile = result["outputelf"].as<decltype(output_elffile)>();
+    else
+    {
+      throw std::runtime_error("the option '--outputelf' is required but missing\n");
+    }
+
+    if (result.count("asm"))
+      input_file = result["asm"].as<decltype(input_file)>();
+    else
+    {
+      throw std::runtime_error("the option '--asm' is required but missing\n");
+    }
+
+    if (result.count("flag"))
+      flags = result["flag"].as<decltype(flags)>();
+
+    if (result.count("libpath"))
+      libpaths = result["libpath"].as<decltype(libpaths)>();
+
+    if (result.count("json"))
+      external_buffers_file = result["json"].as<decltype(external_buffers_file)>();
+
+  }
+  catch (const cxxopts::exceptions::exception& e) {
+    std::cout << all_options.help({"", options_name});
+    auto errMsg = boost::format("Error parsing options: %s\n") % e.what() ;
+    throw std::runtime_error(errMsg.str());
+  }
+
+  std::vector<char> asmBuffer;
+  readfile(input_file, asmBuffer);
+
+  std::vector<char> patch_data_buffer;
+  if (!external_buffers_file.empty())
+    readfile(external_buffers_file, patch_data_buffer);
+
+  try {
+    // Use asm_aie4 buffer type - specific OSABI determined from .target directive in ASM
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::asm_aie4, asmBuffer, flags, libpaths, patch_data_buffer);
+    write_elf(as, output_elffile);
+  } catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+bool
+aiebu::utilities::
+asm_config_parser::parser(const sub_cmd_options &options)
+{
+  std::string json_file;
+  cxxopts::Options all_options("Target config Options", m_description);
+  uint32_t optimization_level =0;
+
+  try {
+    all_options.add_options()
+            ("o,outputelf", "ELF output file name", cxxopts::value<decltype(output_elffile)>())
+            ("j,json", "control packet Patching json file", cxxopts::value<decltype(json_file)>())
+            ("f,flag", "flags (e.g., 'disabledump', 'fulldump', 'opt_level_1', 'compress=zstd', 'compress=zstd:<level>', 'compress=none', 'loglevel_error', 'loglevel_warn', 'loglevel_info', 'loglevel_debug')", cxxopts::value<decltype(flags)>())
+            ("O,optimization", "optimization level (1-4)", cxxopts::value<int>()->default_value("0"))
+            ("h,help", "show help message and exit", cxxopts::value<bool>()->default_value("false"))
+    ;
+
+    auto char_ver = aiebu::utilities::vector_of_string_to_vector_of_char(options);
+
+    auto result = all_options.parse(static_cast<int>(char_ver.size()), char_ver.data());
+
+    if (result.count("help")) {
+      std::cout << all_options.help({"", "Target config Options"});
+      return false;
+    }
+
+    if (result.count("optimization")) {
+      optimization_level = result["optimization"].as<int>();
+      if (optimization_level <= 0 || optimization_level > 4) {
+        std::cout << "Info: optimization level must be between 0 and 4, else default to 0\n";
+        optimization_level =0;
+      }
+      flags.push_back("opt_level_" + std::to_string(optimization_level));
+    }
+
+    if (result.count("outputelf"))
+      output_elffile = result["outputelf"].as<decltype(output_elffile)>();
+    else
+      throw std::runtime_error("the option '--outputelf' is required but missing\n");
+
+    if (result.count("json"))
+      json_file = result["json"].as<decltype(json_file)>();
+
+    if (result.count("flag")) {
+       auto extra_flags = result["flag"].as<std::vector<std::string>>();
+       flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
+    }
+
+  }
+  catch (const cxxopts::exceptions::exception& e) {
+    std::cout << all_options.help({"", "Target config Options"});
+    auto errMsg = boost::format("Error parsing options: %s\n") % e.what() ;
+    throw std::runtime_error(errMsg.str());
+  }
+
+  if (!json_file.empty()) {
+    readfile(json_file, json_buffer);
+    libpaths.push_back(get_parent_directory(json_file));
+  }
+
+  return true;
+}
+
+void
+aiebu::utilities::
+target_aie2ps_config::assemble(const sub_cmd_options &options)
+{
+  if (!parser(options))
+    return;
+
+  try {
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::aie2ps_config, {}, flags, libpaths, json_buffer);
+    write_elf(as, output_elffile);
+  }
+  catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}
+
+void
+aiebu::utilities::
+target_aie4_config::assemble(const sub_cmd_options &options)
+{
+  if (!parser(options))
+    return;
+
+  try {
+    // Use aie4_config buffer type - specific OSABI determined from .target directive in ASM
+    aiebu::aiebu_assembler as(aiebu::aiebu_assembler::buffer_type::aie4_config, {}, flags, libpaths, json_buffer);
+    write_elf(as, output_elffile);
+  }
+  catch (aiebu::error &ex) {
+    auto errMsg = boost::format("Error: %s, code:%d\n") % ex.what() % ex.get_code() ;
+    throw std::runtime_error(errMsg.str());
+  }
+}

@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2024-2026 Advanced Micro Devices, Inc. All rights reserved.
+
+#include "dtrace/action/action_control.h"
+#include <sstream>
+#include <stdexcept>
+
+namespace dtrace::action
+{
+
+//-------------------------read_reg_action::read_reg_action-------------------------//
+/**
+ * read_reg_action() - Constructor with action token, probe type and probe name.
+ * It parses the token and extracts the result, action name and arguments.
+ *
+ * @param token
+ *  Read register action token: val = read_reg(addr)
+ * @param probe_type
+ * @param probe_name
+ */
+read_reg_action::
+read_reg_action(std::string token, uint32_t probe_type, const std::string& probe_name)
+    : action(probe_type, probe_name)
+{
+    std::vector<std::string> fields;
+    dtrace::getline(token, '=', fields);
+
+    if (fields.size() != 2)
+        DTRACE_ERROR("DTRACE_ACTION_INVALID_TOKEN", 
+            "Invalid token: '" << token << "' Expected 'val = read_reg(addr)'");
+
+    m_result = fields[0];
+
+    // Validate and parse the action name
+    std::string argument_string;
+    if (!dtrace::match(fields[1], m_action_name, argument_string))
+        DTRACE_ERROR("DTRACE_ACTION_INVALID_TOKEN", 
+            "Invalid token: '" << token << "' Expected 'read_reg(addr)'");
+
+    // Validate and parse the arguments
+    dtrace::getline(argument_string, ',', m_arguments);
+
+    if (m_arguments.size() < 1)
+        DTRACE_ERROR("DTRACE_ACTION_INVALID_TOKEN_ARGUMENTS", 
+            "Invalid arguments: '" << token << "' read_reg requires 1 arguments (addr)");
+}
+
+//-------------------------read_reg_action::actionize-------------------------//
+/**
+ * actionize() - Adds read register action values to the control buffer.
+ *
+ * @param last 
+ *  Last action for the current probe.
+ * @param control_buffer 
+ * @param mem_buffer 
+ */
+void
+read_reg_action::
+actionize(uint32_t last, std::vector<uint32_t>& control_buffer, std::vector<uint32_t>&)
+{
+    // control buffer
+    // read register action header
+    control_buffer.push_back(
+        (last << dtrace::dtrace_ctrl::second_byte_shift) | action_type::reg_read
+    );
+    // read address
+    control_buffer.push_back(std::stoul(m_arguments[0], nullptr, dtrace::dtrace_ctrl::hexadecimal_base));
+    set_location(control_buffer, false);
+    // return value
+    control_buffer.push_back(dtrace::dtrace_ctrl::result_value_init);
+}
+
+//-------------------------read_reg_action::serialize_helper-------------------------//
+/**
+ * serialize_helper() - Helper function to serialize action.
+ *
+ * @param result_buffer
+ * @param mapping
+ *
+ * @return
+ *  The value from the result buffer based on the location mapping and
+ *  resets the value in the result buffer after serialization.
+ */
+uint32_t
+read_reg_action::
+serialize_helper(uint32_t* result_buffer,
+    const std::unordered_map<uint32_t, uint32_t>& mapping) const
+{
+    uint32_t location = mapping.at(get_location(false));
+    uint32_t value = result_buffer[location];
+    // reset value after serialization
+    result_buffer[location] = dtrace::dtrace_ctrl::result_value_init;
+    return value;
+}
+
+//-------------------------read_reg_action::serialize-------------------------//
+/**
+ * serialize() - Serializes the register read action into a string format.
+ *
+ * @param result_buffer
+ * @param mem_buffer
+ * @param mapping
+ * @param script_output
+ */
+void
+read_reg_action::
+serialize(uint32_t* result_buffer, uint32_t*,
+    const std::unordered_map<uint32_t, uint32_t>& mapping, std::ostream& script_output) const
+{
+    uint32_t result = read_reg_action::serialize_helper(result_buffer, mapping);
+    // Check if probe fired
+    if (result == dtrace::dtrace_ctrl::result_value_init) {
+        m_result_type = action_result_type::read_action_not_fired;
+        return;
+    }
+
+    // serialize string format
+    script_output << "  " << m_result << " = " << result << "\n";
+    m_result_type = action_result_type::read_action_fired;
+}
+
+//-------------------------read_reg_action::serialize-------------------------//
+/**
+ * serialize() - Serializes the read memory register action into json format.
+ *
+ * @param result_buffer
+ * @param mem_buffer
+ * @param mapping
+ * @param json_output
+ */
+void
+read_reg_action::
+serialize(uint32_t* result_buffer, uint32_t*,
+    const std::unordered_map<uint32_t, uint32_t>& mapping, json& json_output) const
+{
+    uint32_t result = read_reg_action::serialize_helper(result_buffer, mapping);
+    // Check if probe fired
+    if (result == dtrace::dtrace_ctrl::result_value_init) {
+        m_result_type = action_result_type::read_action_not_fired;
+        return;
+    }
+
+    // serialize json format
+    json_output[m_probe_name][m_result] = result;
+    m_result_type = action_result_type::read_action_fired;
+}
+
+} // namespace dtrace::action

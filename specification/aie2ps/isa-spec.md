@@ -1,0 +1,1177 @@
+# Introduction
+This document outlines the specification of the _ctrlcode_ ISA which serves as the instruction set
+interpreted by the *CERT* _VM_ also referred to as _job-runner_ in this document. The _job-runner_
+is hosted on top of a Baremetal OS which runs on top of Microblaze uController.
+The whole stack is called CERT.
+
+{% dot
+digraph cert_stack {
+    fontname="Courier New"
+	subgraph cluster_0 {
+	rankdir=TB;
+	node [shape="box" fontname="Courier New"];
+	CtrlCode;
+	node [shape="record" fontname="Courier New"];
+	label="CERT Array";
+	labelloc="t";
+	structcert0 [ label = "{Job-Runner|Baremetal OS|uController}"; ];
+	structcert1 [ label = "{Job-Runner|Baremetal OS|uController}"; ];
+	structcert2 [ label = "{|...|}"; ];
+	structcertn [ label = "{Job-Runner|Baremetal OS|uController}"; ];
+	structcert0 -> CtrlCode;
+	structcert1 -> CtrlCode;
+	structcert2 -> CtrlCode;
+	structcertn -> CtrlCode;
+	color=blue;
+	}
+    label="Application Context";
+	labelloc="b";
+
+}
+
+%}
+
+# Control-Code Sequence
+The control-code is a sequence of opcodes along with operands, organized as _jobs_ which run in a
+pseudo-parallel fashion using cooperative multi-tasking.
+
+Each job is stack-less and has a private set of 8 working registers `r0`..`r7` which can be used as input
+and output operands. The sequence of jobs can be followed by user-defined custom data, e.g.
+configuration data which is to be transferred via the uC-DMA.
+
+{% dot
+digraph control_code_structure {
+  node [shape="box" style="rounded"]
+  rankdir="LR"
+
+  begin [shape=point]
+  end [shape=point]
+
+  START_JOB [label="START_JOB
+(_DEFERRED)"]
+
+  begin -> START_JOB
+  START_JOB -> operation
+  operation -> operation
+  operation -> END_JOB
+  END_JOB -> START_JOB
+  END_JOB -> EOF
+  EOF -> data
+  data -> data
+  data -> end
+
+}
+
+%}
+
+# Alignment
+All operands have to be naturally aligned, i.e. 16-bit numbers may only start on 16-bit boundaries and
+32-bit numbers may only start on 32-bit boundaries. The size of an operation, i.e. the opcode followed by all operands,
+should be a multiple of 32 bits. To achieve the required alignment, padding operands can be used.
+
+# Endianness
+All numbers are encoded in little-endian order.
+
+# Control-Code Pages
+Control-code is organized as a series of pages which are paged-in to the shared Data Memory (sDM)
+by the uC-DMA in a ping-pong fashion. A page cannot have a barrier or lock dependency on a following page,
+although backward dependency should work. Page boundary is hinted by the `.eop` [directive](#directives).
+
+# Control-Code Structure
+TODO: Describe START_JOB / END_JOB etc, state diagram?
+Control Code for uC 0 in Column 0
+
+{% dot
+digraph control_code {
+    fontname="Courier New";
+    rankdir=TB;
+    subgraph cluster_0 {
+        rankdir=TB;
+        node [shape="record" fontname="Courier New"];
+        label="Page 0";
+        labelloc="t";
+        fontname="Courier New";
+
+        structcertn [label="{Job-n|Opcode 0|Opcode 1|...|Opcode n}"];
+        structcert2 [label="{|||...|}"];
+        structcert1 [label="{Job-1|Opcode 0|Opcode 1|...|Opcode n}"];
+        structcert0 [label="{Job-0|Opcode 0|Opcode 1|...|Opcode n}"];
+    }
+	label="...
+Page n";
+	labelloc="b";
+}
+%}
+
+
+# Tile and actor IDs
+## Tile
+- All DMA S2MM channels
+- All DMA MM2S channels
+
+## MEM
+- All DMA S2MM channels
+- All DMA MM2S channels
+
+## Shim
+- All DMA S2MM channels
+- All DMA MM2S channels
+
+# Binary Format
+Control-code asm files are assembled into standard 32-bit ELF binary files. The file is organized into [sections](#directives).
+A section's column number and page number tells CERT which column's sDM the section should be loaded on. The page number
+is used for cooperative paging using a ping-pong scheme.
+
+{% dot
+digraph cert_stack {
+    fontname="Courier New"
+	rankdir=TB;
+	node [shape="record" fontname="Courier New"];
+	structcert0 [ label = "{ELF Header|.ctrltext.0.0|.ctrldata.0.0|.ctrltext.0.1|.ctrldata.0.1|.ctrltext.0.2|.ctrldata.0.2|.ctrltext.1.0|.ctrldata.1.0|.shstrtab|.dynsym}"; ];
+    label="Column 0 with three pages
+ and column 1 with one page";
+	labelloc="b";
+
+}
+
+%}
+
+
+# Data Types
+
+## opcode
+8-bit unsigned integer containing a unique identifier for the operation.
+
+
+## register
+8-bit unsigned integer 0..23 used to reference _job-runner_ registers `r0..r23`.
+Register `r0..r7` are local registers which are private to each job.
+Register `r8..r23` are global registers which are shared among all the jobs.
+Global registers `r8..r23` also have alias name `g0..g15`
+
+
+## barrier
+8-bit unsigned integer used to reference barriers provided by _job-runner_.
+There are 2 types of barrier provided, local_barrier and remote_barrier.
+Barrier `lb0..lb15`, which essentially are integer 0..15, are local barriers
+which are used for synchronization across jobs running in same _job-runner_.
+Barrier `rb0..rb7`, which essentially are integer 1..8, are remote barriers
+which are used for synchronization across jobs running on different _job-runner_.
+
+
+## const
+Constant number. The width is specified per-operand and should be 8, 16 or 32 bit.
+
+
+## page_id
+16 bit constant number to specify a label which is from the page `page_id`. This type is used
+to tell the assembler the label is not resolved in current page
+
+
+## pad
+Used for padding / alignment purposes. The value is always set to zero.
+In human-readable representations (asm file), padding operands are omitted from the operand list.
+
+
+## jobsize
+16-bit unsigned integer containing the size of the job (`START_JOB` until `END_JOB`), automatically
+calculated and filled by the assembler.
+In human-readable representations (asm file), this operand is omitted from the operand list.
+
+
+
+# Operations
+
+## START_JOB (0x00)
+
+Indicates the start of a new job.
+
+| 0x00 | - | job_id | size | - | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | jobsize (16b) | pad (16b) | 8B |
+
+Indicates the start of a new job and creates a new entry in the job table,
+if not done yet.
+The job size is auto-calculated and inserted by the assembler and not supplied
+explicitly by the user.
+
+
+## START_JOB_DEFERRED (0x17)
+
+Indicates the start of a new deferred job.
+
+| 0x17 | - | job_id | size | - | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | jobsize (16b) | pad (16b) | 8B |
+
+Same as `START_JOB`, but does not schedule the job yet. The new job can be
+launched manually via `LAUNCH_JOB`.
+
+
+## LAUNCH_JOB (0x18)
+
+Launches a deferred job.
+
+| 0x18 | - | job_id | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | 4B |
+
+Launch / schedule a job created with `START_JOB_DEFERRED`.
+This operation might only be called once per job. Launching the same job multiple
+times is undefined behavior.
+The newly launched job will be first scheduled for the next scheduling cycle and
+the current job will continue to run until encountering a blocking operation.
+
+
+## START_COND_JOB_PREEMPT (0x1f)
+
+Indicates a new job which can be conditionally started according to preemption.
+
+| 0x1f | - | job_id | size | - | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | jobsize (16b) | pad (16b) | 8B |
+
+Indicates the start of a new job and creates a new entry in the job table,
+if preemption flag has been set. The flag is cleared when preemption is
+checked, and is set if preemption happens, so the job runs only if the flag indicates that a
+preemption occurred when the condition is checked.
+The job size is auto-calculated and inserted by the assembler and not supplied
+explicitly by the user.
+In multi-uC case, CERT will do barrier sync after this job, so each uC should have the same number
+of this type of conditional jobs.
+The conditional job can share page with other jobs, and all jobs following this job in the page
+don't start before this job is done.
+
+
+## UC_DMA_WRITE_DES (0x01)
+
+Enqueues a DM2MM uC-DMA transfer and returns a wait handle for it.
+
+| 0x01 | - | wait_handle | - | descriptor_ptr | - | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | register (8b) | pad (8b) | const (16b) | pad (16b) | 8B |
+
+Enqueues a DM2MM uC-DMA transfer with the given pointer used as the start
+BD. The pointer is relative to the data section of the control page.
+In case the DM2MM queue is full, the job will preempt and retried in the
+next scheduling cycle, i.e. the job will be blocked until there is space available
+in the queue.
+In case enqueueing is successful, the operation returns immediately without
+waiting for the DMA transfer to finish. A wait handle is returned in the
+register specified in `wait_handle`. This handle can be used to wait for the
+DMA transfer to finish via the `WAIT_UC_DMA` operation.
+
+
+## WAIT_UC_DMA (0x02)
+
+Waits for the specified uC-DMA wait handle to finish.
+
+| 0x02 | - | wait_handle | - | instruction size |
+| :-: | - | - | - | -: |
+| opcode (8b) | pad (8b) | register (8b) | pad (8b) | 4B |
+
+Waits for the wait handle stored in the register specified in `wait_handle` to
+finish.
+If the associated uC-DMA transfer is already finished when this operation is
+called, the operation returns immediately. Otherwise, the operation will yield
+control to a different job and the job will not be re-scheduled until the transfer
+has finished.
+
+
+## MASK_WRITE_32 (0x03)
+
+Writes a constant value with masked bits to a constant AXI-MM address.
+
+| 0x03 | - | - | address | mask | value | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | const (32b) | 16B |
+
+This operation is RMW. Those unmasked bits at the address are unchanged before
+and after the operation. The RMW itself is not atomic, so there would be potential
+race condition if multiple uC run this opcode towards same address.
+
+
+## WRITE_32 (0x05)
+
+Writes a constant value to a constant AXI-MM address.
+
+| 0x05 | - | - | address | value | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | 12B |
+
+The constant value is written to a constant AXI-MM address. The write is performed
+via the uC's AXI-MM store port and does not involve the uC-DMA.
+This operation is synchronous, i.e. it is guaranteed that the write has been executed
+completely when this operation finishes.
+
+
+## WAIT_TCTS (0x06)
+
+Wait for tcts for the shim/mem DMA tasks.
+
+| 0x06 | - | tile_id | actor_id | - | target_tcts | - | instruction size |
+| :-: | - | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | const (8b) | pad (8b) | const (8b) | pad (8b) | 8B |
+
+Wait for `target_tcts` number of tcts for tasks enqueued on a shim or mem DMA channel.
+Tasks can be enqueued through `WRITE_32` and/or `UC_DMA_WRITE_DES/UC_DMA_WRITE_DES_SYNC`
+In case the number of TCTs haven't all been arrived yet when this operation is executed,
+the current job will be blocked until all the TCT arrive. The runtime will proceed with
+execution of other (non-blocked) jobs during that time.
+Use this operation only for tasks which have TCTs enabled and where the TCTs are
+routed to arrive at the uC executing this operation.
+
+Note that tasks can be enqueued from any jobs, but only one job can call `WAIT_TCTS`. And
+waiting for more tcts than enqueued will hang the job forever
+
+
+## END_JOB (0x07)
+
+Indicates the end of the current job.
+
+| 0x07 | - | - | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | 4B |
+
+Indicates the end of a job started with `START_JOB`. After `END_JOB`, the only
+valid operations are `START_JOB` and `EOF`.
+
+
+## UC_DMA_WRITE_DES_SYNC (0x09)
+
+Enqueues a DM2MM uC-DMA transfer and waits for it to finish.
+
+| 0x09 | - | descriptor_ptr | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | 4B |
+
+Convenience operation which combines `UC_DMA_WRITE_DES` and `WAIT_UC_DMA`, i.e. enqueues the uC-DMA BD
+at `descriptor_ptr` and waits until the uC-DMA finishes processing that BD.
+
+
+## WRITE_32_D (0x0b)
+
+Writes a constant value or a value from a register to an AXI-MM address which is constant or comes from a register.
+
+| 0x0b | - | flags | - | address | value | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (8b) | pad (8b) | const (32b) | const (32b) | 12B |
+
+Dynamic version of `WRITE_32`. The flags arg is used to tell whether address/value are immediate
+or a register number.
+```
+| bit 0                                 | bit 1                               |
+| ------------------------------------- | ----------------------------------- |
+| 1 : address is immediate              | 1 : value is immediate              |
+| 0 : address is register number.       | 0 : value is register number.       |
+| The write address is in this register | The write value is in this register |
+```
+
+
+## READ_32 (0x0c)
+
+Reads the value of a constant AXI-MM address and stores it in a register.
+
+| 0x0c | - | value | - | address | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | register (8b) | pad (8b) | const (32b) | 8B |
+
+The value of the constant AXI-MM address in `address` is read and put into
+destination register `value`. The read is performed via the uC's AXI-MM store port and
+does not involve the uC-DMA.
+This operation is synchronous, i.e. it is guaranteed that the read has been executed
+completely when this operation finishes.
+
+
+## READ_32_D (0x0d)
+
+Reads the value of an AXI-MM address stored in a register and stores it in a register.
+
+| 0x0d | - | address | value | instruction size |
+| :-: | - | - | - | -: |
+| opcode (8b) | pad (8b) | register (8b) | register (8b) | 4B |
+
+The value of the AXI-MM address loaded from register `address` is read and put into
+destination register `value`. The read is performed via the uC's AXI-MM store port and
+does not involve the uC-DMA.
+This operation is synchronous, i.e. it is guaranteed that the read has been executed
+completely when this operation finishes.
+
+
+## APPLY_OFFSET_57 (0x0e)
+
+Applies an offset to one or more shim DMA BD base address fields. (Version for 57-bit base addresses.)
+
+| 0x0e | - | table_ptr | num_entries | offset | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | const (16b) | const (16b) | 8B |
+
+Patches the address fields in shim DMA BDs by adding the value loaded global registers 'offset' and 'offset+1'.
+If the offset is 0xFFFF, the offset added is the host address of 1st page of control code.
+shim DMA BDs are saved in a table pointed by `table_ptr`. One entry in the table is a set of shim DMA BD.
+`num_entries` specifies the number of shim DMA BDs in the table.
+Example:
+```
+# non-contiguous BDs
+  APPLY_OFFSET_57     @mem21_bd0, 1, 0
+  APPLY_OFFSET_57     @mem31_bd0, 1, 1
+# ...
+.align              4
+mem21_bd0:
+  .long              0x00000080
+  .long              0x00020000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x80000000
+  .long              0x00000000
+.align              4
+mem31_bd0:
+  .long              0x00000080
+  .long              0x00020000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x80000000
+  .long              0x00000000
+
+# contiguous BDs
+  APPLY_OFFSET_57     @mem41_bd0, 2, 1
+# ...
+.align              4
+mem41_bd0:
+  # 1st set BDs
+  .long              0x00000080
+  .long              0x00020000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x80000000
+  .long              0x00000000
+  # 2nd set BDs
+  .long              0x00000080
+  .long              0x00020000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x80000000
+  .long              0x00000000
+```
+The patching using this operation needs be done _before_ programming the shim DMA buffer
+descriptors via the uC-DMA.
+
+
+## APPLY_OFFSET_SRAM (0x24)
+
+Applies an offset in SRAM to one or more shim DMA BD base address fields. (Version for 57-bit base addresses.)
+
+| 0x24 | - | table_ptr | num_entries | - | address | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | const (16b) | pad (16b) | const (32b) | 12B |
+
+Patches address fields in shim DMA BDs by adding the value read from AIE SRAM `address`.
+The shim DMA BD address should be patched through APPLY_OFFSET_57 first, and this patch should happen after
+the `address` in the SRAM already has the information of the offset. When this opcode is required,
+APPLY_OFFSET_57 and APPLY_OFFSET_SRAM have same `table_ptr` and `num_entries`
+Example:
+```
+  APPLY_OFFSET_57     @wts_shim_bd, 1, 0
+  APPLY_OFFSET_SRAM   @wts_shim_bd, 1, 0x200000
+# ...
+.align              4
+wts_shim_bd:
+  .long              0x00000080
+  .long              0x00020000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x00000000
+  .long              0x80000000
+  .long              0x00000000
+```
+
+
+## LOCAL_BARRIER (0x11)
+
+Local barrier used to synchronize multiple jobs.
+
+| 0x11 | - | local_barrier_id | num_participants | instruction size |
+| :-: | - | - | - | -: |
+| opcode (8b) | pad (8b) | barrier (8b) | const (8b) | 4B |
+
+`local_barrier_id` indicates a barrier resource that is used to synchronize `num_participants`
+number of jobs. _All_ participating jobs must reach this barrier before any participating job
+can move forward. A job which executes this instruction is blocked till the barrier matures. Example:
+```
+LOCAL_BARRIER       $lb0, 2
+```
+
+
+## REMOTE_BARRIER (0x12)
+
+Remote barrier used to synchronize multiple columns.
+
+| 0x12 | - | remote_barrier_id | - | party_mask | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | barrier (8b) | pad (8b) | const (32b) | 8B |
+
+`remote_barrier_id` indicates a barrier resource that is used to synchronize jobs in different
+columns. _All_ participating jobs must reach this barrier before any participating job can move forward.
+A job which executes this instruction is blocked till the barrier matures. `party_mask` is the bit map of
+participant columns, where each column takes the bit corresponding to its column index. For any specific
+remote barrier, only one job in a column can participate in. Example:
+```
+REMOTE_BARRIER      $rb0, 0xC
+```
+
+Note that it is not necessary for all prior jobs to complete before the barrier matures.
+
+
+## EOF (0xff)
+
+Indicates the end of the operation sequence.
+
+| 0xff | - | - | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | 4B |
+
+`EOF` must follow the last `END_JOB` instruction in a page and tells the
+runtime _job-runner_ to stop parsing the code any further.
+
+
+## POLL_32 (0x13)
+
+Poll read address until the response equals value.
+
+| 0x13 | - | - | address | value | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | 12B |
+
+This poll is a busy poll. When it is used to check the occur of an event,
+e.g. DMA completion, it is way more expensive compared to the event trigger
+implementation, aka TCT.
+Note that the poll will block the current job, but other jobs will continue
+to execute.
+
+
+## MASK_POLL_32 (0x14)
+
+Poll read address until the response equals value after mask applied.
+
+| 0x14 | - | - | address | mask | value | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | const (32b) | 16B |
+
+This poll is busy poll. When it is used to check the occur of an event,
+e.g. DMA completion, it is way more expensive compared to the event trigger
+implementation, aka, TCT
+
+
+## TRACE (0x15)
+
+Collect trace info at opcode boundary
+
+| 0x15 | - | info | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | 4B |
+
+This opcode is used for dynamic tracing purpose. Dynamic means, without
+control code change, trace probe can be placed at any place dynamically
+in control code to collect the trace info when the job runs there.
+This opcode should not be used in user control code.
+In order to use this, for each trace probe that is inserted at a target opcode,
+user needs to create a control body.
+The first 4 bytes of the target opcode binary are replaced with the binary of this opcode
+before the control code is loaded to CERT. Control body of all trace probes should be loaded to CERT first as well.
+The trace control body locates in sDM. There are amount of sDM preserved for dynamic tracing purpose.
+Once collected, those data will be moved out to host ddr.
+Control body:
+```
+| Word | B0 | B1 | B2 | B3 | Description                             |
+|------|----|----|----|----|---------------------------------------- |
+| W0   | 01 | 00 | ff | ff | `probe_begin`                           |
+| W1   | 01 | 01 | 04 | 00 | `probe_end`, control body at W4         |
+| W2   | 00 | 02 | m1 | 00 | `probe_jprobe`, control body at Wm1     |
+| W3   | 10 | 03 | n1 | 00 | `probe_tracepoint`, control body at Wn1 |
+| W4   | .. | .. | .. | .. |                                         |
+| ...  |    |    |    |    |                                         |
+| Wm1  | 00 | 02 | m2 | 00 | `jprobe` for opcode in                  |
+|      | p1 | 00 | o1 | 00 |  page p1 at offset o1                   |
+|      | .. | .. | .. | .. |                                         |
+| Wm2  | 00 | 02 | ff | ff | `jprobe` for opcode in                  |
+|      | p2 | 00 | o2 | 00 |  page p2 at offset o2                   |
+|      | .. | .. | .. | .. |                                         |
+| Wn1  | 00 | 03 | ff | ff | `tracepoint` at Wn1 with                |
+|      | 00 | 00 | i1 | 00 |  index i1                               |
+|      | .. | .. | .. | .. |                                         |
+```
+The control body is organized as link list of each probe type in order of
+`BEGIN/END/JPROBE/TRACEPOINT`. The second and third bytes of the probe's first word indicate the location of the next probe.
+For the last probe, these bytes are set to 0xFFFF. Each probe will have one or multiple actions.
+Each action specify what user wants to do once the probe fires. e.g collect timestamp, read/write aie register,
+block read/write aie registers, break control code run.
+For timestamp action, there are 3 word fields in control body,
+```
+| Word | B0 | B1 | B2 | B3 | Description           |
+|------|----|----|----|----|-----------------------|
+| W0   | 00 | 02 | 00 | 01 | `timestamp`           |
+| W1   | 00 | 00 | 00 | 00 | high 32 bit timestamp |
+| W2   | 00 | 00 | 00 | 00 | low 32 bit timestamp  |
+```
+NOTE: Trace is only for internal purpose. It must not appear in user control code. Assembler will throw error if used.
+
+
+## NOP (0x16)
+
+No-op (no operation) instruction.
+
+| 0x16 | - | - | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | 4B |
+
+`NOP` instruction is ignored by the _job-runner_. `NOP` instructions may be used for benchmarking
+the _job-runner_ performance and for inserting small delays. Calling this operation may yield
+control to another job.
+
+
+## PREEMPT (0x19)
+
+save/restore context of an inference at preemption point in control code
+
+| 0x19 | - | id | save_control_code_offset | restore_control_code_offset | hintmap | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | page_id (16b) | page_id (16b) | patch_buf (0b) | 8B |
+
+If the control code supports preemption, there will be preemption points inserted in it. `id` specifies the preemption
+point index. `id` values should be consecutive, starting with index 0. We assume all aie cores are stateless,
+so at each preemption point, we only need to save/restore contents in memtile.
+`save_control_code_offset` specifies a relative address in unit of page to the 1st page of the control code,
+and this address is where the `SAVE` control code resides. `restore_control_code_offset` specifies a relative address in
+unit of page to the 1st page of control code, and this address is where the `RESTORE` control code resides. The opcode
+can determine whether preemption is required, and if required, it can also distinguish whether it is to `SAVE` or to
+`RESTORE`, and run the `SAVE` or `RESTORE` control code accordingly.
+In multi-uC case, at each preemption point, CERT will do barrier sync regardless of whether the preemption happens or not, so
+for each preemption point id, the control code of each uc should have this opcode with same `id`.
+This opcode should take one whole job but the job can share page with other jobs.
+
+Optional 4th assembler operand `@hintmap` (type `patch_buf`, not encoded in the binary PREEMPT opcode):
+a label in the same scope as the PREEMPT opcode, defined with `.long` words forming a hint bitmap.
+Each set bit selects one 64KB memtile chunk (bit *i* -> chunk *i*). The assembler uses the bitmap to determine
+which memtile data this controller saves/restores at this preemption point. A hintmap need not be contiguous
+(holes between set bits are allowed). Set bits must not overlap between controllers at the same preemption point;
+the assembler rejects asm when two controllers request the same chunk. When comparing controllers, the assembler
+uses each hintmap's span — from the lowest to the highest set bit, including any holes inside that range. If
+spans overlap, the assembler redistributes pooled hintmap chunks so each controller receives a non-overlapping
+scratchpad region (the source hintmap labels are not rewritten).
+
+Example (aie4, two controllers at preemption point 1). Input hintmaps overlap in span but not in set bits:
+```
+.attach_to_group 0
+START_JOB 1
+  PREEMPT 0x0001, @save, @restore, @hintmap_0
+END_JOB
+.align 4
+hintmap_0:
+  .long 0x00000f0f          ; chunks {0,1,2,3,8,9,10,11}, span [0..11]
+
+.attach_to_group 2
+START_JOB 1
+  PREEMPT 0x0001, @save, @restore, @hintmap_0
+END_JOB
+hintmap_0:
+  .long 0x0000f0f0          ; chunks {4,5,6,7,12,13,14,15}, span [4..15]
+```
+
+After settlement the hintmap `.long` values above are unchanged; each controller is assigned a disjoint
+scratchpad region covering the pooled chunks split at the largest gap:
+```
+controller 0: chunks [0..7]   (scratchpad size 512KB)
+controller 2: chunks [8..15]  (scratchpad size 512KB)
+```
+
+Note:
+
+1. When this opcode runs, all prior jobs have to complete, but async tasks triggered by prior jobs don't need to complete.
+   For example, if a prior job triggers a prefetch of weights through shimDMA, the shimDMA doesn't need to complete
+
+2. When this opcode runs, all following jobs in the same page don't start before this preemption job is done
+
+3. `SAVE` and `RESTORE` control code each has self-contained stream switch routing for themselves. The routing information
+will be cleared after `SAVE` and `RESTORE` are done
+
+
+## LOAD_PDI (0x1a)
+
+load pdi
+
+| 0x1a | - | - | pdi_id | pdi_host_addr_offset | - | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | page_id (16b) | pad (16b) | 12B |
+
+A PDI itself is also a piece of control code. It can be loaded by other control code anywhere anytime.
+`pdi_id` is an ELF-wide unique ID and specifies a unique PDI. If multiple control code ELFs run in one hwctx,
+the `pdi_id` should be hwctx-wide unique. `pdi_id` value of `0xffffffff` is reserved and invalid for opcode use, 
+as CERT initializes the last PDI ID to this value. When this opcode runs, consecutive loading of same PDI will cause subsequent
+loading skipped by the uC. `pdi_host_addr_offset` specifies a page-unit relative address to the 1st page of
+the control code, indicating where the PDI control code resides
+This opcode should take one whole job but the job can share a page with other jobs. All jobs following the load_pdi job
+don't start before the load_pdi job is done.
+In the multi-uC case, CERT will do barrier sync after the load_pdi job, so each uC needs to have the same number of load_pdi jobs
+
+According to the AIE spec,
+```
+For full reconfiguration of the cores' program memory, the following steps may be taken.
+
+Wait for core to reach a known synchronization point (lock, or Core done)
+
+Reset, disable core (Section 5.12.2)
+
+Write PM
+
+Unreset, enable core
+```
+
+Note that if core ELF is part of PDI, reset/unreset core and enable/disable of the core are required. This should be part of the generated control code.
+
+
+## LOAD_CORES (0x04)
+
+load cores
+
+| 0x04 | - | - | core_elf_id | core_elf_host_addr_offset | - | instruction size |
+| :-: | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | page_id (16b) | pad (16b) | 12B |
+
+This is essentially the same as LOAD_PDI except that CERT will save the ELF info for AIE cores to a different location than the PDI so that CERT can recover both during preemption.
+`core_elf_id` value of `0xffffffff` is reserved and invalid for opcode use, as CERT initializes the last core ELF ID to this value.
+
+Note that similar to LOAD_PDI, reset/unreset and enable/disable of the core are required to load a new core ELF. This should be part of the generated control code.
+
+
+## LOAD_CORES_CP (0x20)
+
+load cores_cp
+
+| 0x20 | - | - | core_elf_id | instruction size |
+| :-: | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | 8B |
+
+This is to load control packet format core ELFs. Compared to the `LOAD_CORES`,
+this opcode assumes the control code to load the control packet through shimDMA fits a page,
+so the current page that holds this opcode will not be overwritten.
+As a result, the control-packet-loading code can be placed immediately after this opcode and kept in a single job. 
+The `core_elf_id` in this opcode and the one in `LOAD_CORES` share the same ID space, so if both `LOAD_CORES` and `LOAD_CORES_CP`are present, CERT saves the ID of the last one.
+`core_elf_id` value of `0xffffffff` is reserved and invalid for opcode use, as CERT initializes the last core ELF ID to this value.
+
+Notes:
+
+1. Similar to LOAD_PDI, reset/unreset core and enable/disable of the core are required to load a new core ELF. This should be part of the generated control code.
+
+2. Completion of shimDMA transferring control packet blob doesn't imply the completion of the control packet loading.
+Control code itself is responsible for checking completion of control packet loading.
+There are two approaches for doing this, one is to enable the write response of the last control packet and the other is to add one extra control packet write to a known register.
+For the former approach, routing for response packet should be configured, and `WAIT_TCTS` is used to check the response. 
+For the latter approach, `POLL_32`/`MASK_POLL_32` is used to check the register of the extra control packet.
+
+3. In the broadcast case, completion check should be performed on all destination cores.
+
+
+## LOAD_LAST_PDI (0x1b)
+
+load last loaded pdi
+
+| 0x1b | - | - | instruction size |
+| :-: | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | 4B |
+
+Used in the preemption restore case. The info (PDI ID and location in host DDR) of the most recently loaded PDI is saved by the firmware. During restore (after a context switch), the last loaded PDI will be loaded with this opcode.
+
+Notes:
+
+1. CERT saves information for the last PDI and the last core ELF.
+
+2. The last core ELF can be from either `LOAD_CORES` or `LOAD_CORES_CP`, whichever ran last.
+
+3. When preemption is supported, `LOAD_PDI` is mandatory; that is, there must be at least one `LOAD_PDI` before any preemption point is inserted. `LOAD_CORES`/`LOAD_CORES_CP` are optional.
+
+
+## SAVE_TIMESTAMPS (0x1c)
+
+save the timestamps
+
+| 0x1c | - | - | unq_id | instruction size |
+| :-: | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | 8B |
+
+Used to save the time stamps whenever control code encountered this opcode. AIE compiler will also add the unique
+identifier while generating control code. The timestamps will get saved in shared data memory. Whenever the
+allocated shared memory gets fill, CERT should initiate the uc-DMA to transfer data from shared
+data memory to host memory.
+
+
+## SAVE_REGISTER (0x1e)
+
+Reads value from specified register address and saves it in Shared Data Memory.
+
+| 0x1e | - | - | address | unq_id | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | 12B |
+
+Used to save the register address values. AIE compiler will also add unique identifier while generating control code.
+Values will be saved in the shared data memory. Whenever the allocated shared memory gets fille, CERT will start uC-DMA
+to transfer data from sDM to host memory.
+
+
+## REL_ACQ_SYNC (0x21)
+
+Reads the release address and immediately busy-waits on the acquire address to support the release-acquire lock pattern.
+
+| 0x21 | - | - | rel_address | acq_address | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | 12B |
+
+This operation allows for implementing a release-acquire lock pattern for compact and  fast global-barrier implementation across all participating uC's
+The compiler is responsible for allocating the locks and  calculating appropriate relaease and aquire addresses.
+Example:
+```
+; rel_address and acq_address shall always refer to the same lock.
+; rel_address shall contain a release operation on the lock.
+; acq_addres shall contain an acquire operation on the lock.
+; rel_val possible values are only -1 or 1
+; acq_val possible values are only 0 or numUCsParticipatingInLock
+
+REL_ACQ_SYNC 0x0205720c, 0x02057004 ; barrierId: 0, lockId: 28, release_aquire relVal: 1  acqVal:  3
+
+```
+
+
+## UC_DMA_MASK_POLL_EXT (0x22)
+
+Polls an external (NoC-mapped) register until (read & mask) == value.
+
+| 0x22 | - | - | addr_hi | addr_lo | mask | value | instruction size |
+| :-: | - | - | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | pad (16b) | const (32b) | const (32b) | const (32b) | const (32b) | 20B |
+
+Reads a 32-bit value from the external address formed by (addr_hi << 32 | addr_lo) via
+a uC-DMA MM2DM transfer and busy-waits until (read_value & mask) == value.
+Analogous to MASK_POLL_32 but for addresses outside the AIE array register space,
+reachable via NMU -> NoC (e.g. PL IP AXI-Lite registers).
+Used to poll ap_done (bit[1]) of a wts_pl_ctrl AP_CTRL register after triggering ap_start.
+Example:
+```
+; Poll ap_done (bit[1]) on wts_pl_ctrl instance 0 (base 0x80000030000):
+UC_DMA_MASK_POLL_EXT 0x00000800, 0x00030000, 0x00000002, 0x00000002
+```
+
+
+## APPLY_OFFSET_PL (0x23)
+
+Patches the physical DDR address (words 8+9) of one or more wts_params blocks for PL IP start_address.
+
+| 0x23 | - | table_ptr | buffer_id | - | instruction size |
+| :-: | - | - | - | - | -: |
+| opcode (8b) | pad (8b) | const (16b) | const (16b) | pad (16b) | 8B |
+
+Patches wts_params blocks (each 10 words / 40 bytes) starting at `table_ptr`.
+XRT resolves `buffer_id` to a 64-bit physical address at BO bind time and
+writes word[8] <- phys_addr[31:0] and word[9] <- phys_addr[63:32] in each block.
+Example:
+```
+START_JOB 1
+  APPLY_OFFSET_PL @wts_params, WTS_BUFFER_ID
+  UC_DMA_WRITE_DES_SYNC @wts_pl_bd_chain
+  UC_DMA_MASK_POLL_EXT 0x00000800, 0x00030000, 0x00000002, 0x00000002
+END_JOB
+.align 16
+wts_pl_bd_chain:
+  UC_DMA_BD 0x800, 0x00030010, @wts_params, 10, 1, 1
+  UC_DMA_BD 0x800, 0x00030000, @val_ap_start, 1, 1, 0
+.align 4
+wts_params:
+  .long 0x00000000 ; word 0  offset
+  .long 0x00000000 ; word 1  (reserved)
+  .long 0x00000004 ; word 2  length
+  .long 0x00000000 ; word 3  (reserved)
+  .long 0x00000000 ; word 4  stride
+  .long 0x00000000 ; word 5  (reserved)
+  .long 0x00000001 ; word 6  iterations
+  .long 0x00000000 ; word 7  (reserved)
+  .long 0x00000000 ; word 8  start_addr[31:0]  <- APPLY_OFFSET_PL
+  .long 0x00000000 ; word 9  start_addr[63:32] <- APPLY_OFFSET_PL
+val_ap_start:
+  .long 0x00000001
+```
+
+
+
+# Directives
+The directive syntax is same as that used by GNU assembler <https://sourceware.org/binutils/docs/as/Pseudo-Ops.html>,
+although only the following subset is supported.
+
+
+## .long
+
+Specifies a 4 byte integer value.
+
+|`.long` | value |
+|-| - |
+|-| integer |
+
+Specifies 4 byte integer value often used for BDs in ctrldata.
+Example:
+```
+mem21_bd0:
+  .long              0x00000080
+  .long              0x00020000
+  ...
+```
+
+
+## .align
+
+Specifies a specific aligment for the next ctrlcode fragment.
+
+|`.align` | value |
+|-| - |
+|-| integer |
+
+Specifies a specific alignment defined by the `value` parameter for the following `ctrltext` or `ctrldata`.
+Example:
+```
+  .align           16
+  INPUT_row1_actor11_taskleadin_ucbds:
+    UC_DMA_BD       0, 0x001A0000, @mem01_bd0, 8, 0, 1
+    UC_DMA_BD       0, 0x001A0020, @mem01_bd1, 8, 0, 1
+    UC_DMA_BD       0, 0x021A0000, @mem11_bd0, 8, 0, 0
+    ...
+```
+
+
+## .section
+
+Specifies a name for the section with optional flags.
+
+|`.section` | name | flags |
+|-| - | - |
+|-| string | string |
+
+Describes the name of a ctrlcode section and optional flags (A,W,X) for mapping at runtime.
+`.ctrltext` is used for text sections and `.ctrldata` is used for data sections. Suffix in the
+form of `.<ucnumber>` may be used with section names.
+Example:
+```
+.section .ctrltext.2,"ax"
+.align 16
+START_JOB   0x15
+  UC_DMA_WRITE_DES_SYNC   @label1
+  LOCAL_BARRIER   $lb0, 0xB
+END_JOB
+
+START_JOB   0x16
+...
+```
+
+
+## .include
+
+Specifies the name of file that should be included at the point.
+
+|`.include` | file |
+|-| - |
+|-| string |
+
+Provides a method to organize miltiple asm files which can be combined together to produce a single logical asm file.
+Example:
+```
+...
+.include "resetcode.0.asm"
+.include "corecode.1.asm"
+START_JOB   0x15
+  UC_DMA_WRITE_DES_SYNC   @label1
+  LOCAL_BARRIER   $lb0, 0xB
+END_JOB
+START_JOB   0x16
+...
+```
+
+
+## .eop
+
+Specifies end of page.
+
+|`.eop` |
+|-|
+|-|
+
+Provides a method to specify end of page.
+Example:
+```
+...
+START_JOB   0x15
+  UC_DMA_WRITE_DES_SYNC   @label1
+  LOCAL_BARRIER   $lb0, 0xB
+END_JOB
+.eop
+
+START_JOB   0x16
+...
+```
+
+
+## .attach_to_group
+
+Specifies the uC index for the following sections.
+
+|`.attach_to_group` | uC index |
+|-| - |
+|-| integer |
+
+Provides a method to bind the following sections to a specific uC. Multiple
+such directives may be used in a file each with a different uC index. The
+assembler uses this directive to generate sections names like `.ctrltext.<ucnumber>`
+and `.ctrldata.<ucnumber>`.
+Note that aie2ps uC index and column index are same, aie4 uC index is not similar to column index,
+aie4 has two uC per column
+```
+aie4                          aie2ps
+| column index | uC index |   | column index | uC index |
+| -------------| -------- |   | -------------| -------- |
+| column 0_A   | 0        |   | column 0     | 0        |
+| column 0_B   | 1        |   | column 1     | 1        |
+| column 1_A   | 2        |   | column 2     | 2        |
+| column 1_B   | 3        |   | column 3     | 3        |
+| column 2_A   | 4        |   | column 4     | 4        |
+| column 2_B   | 5        |   | ...          | ...      |
+```
+Example:
+```
+...
+.attach_to_group 0
+START_JOB 0
+  READ_32             $r0, 0x2100000
+  WRITE_32_D          2, 0x4100000, 0
+  REMOTE_BARRIER      $rb0, 0x6
+END_JOB
+EOF
+.attach_to_group 1
+START_JOB 0
+  uC_DMA_WRITE_DES    $r0, @uc_dma_bd0
+  WAIT_uC_DMA         $r0
+  LOCAL_BARRIER       $lb0, 2
+END_JOB
+START_JOB 1
+  LOCAL_BARRIER       $lb0, 2
+  WRITE_32            0x01A0634, 0x80000000
+  WAIT_TCTS           TILE_0_1, MM2S_0, 1
+END_JOB
+EOF
+...
+```
+
+
+## .setpad
+
+This directive is used to declare a buffer.
+
+|`.setpad` | buffer name | buffer size/path to buffer blob |
+|-| - | - |
+|-| string | integer/string |
+
+Provides a method to specify buffer/buffer blob. If an immediate number is passed
+as 2nd arg, the number is size in words, there will be a buffer with name specified as 1st arg
+declared with that size and initialized as all 0s. If a file is passed as 2nd arg, there will
+be a buffer with name specified as 1st arg with the size of the file declared and initialized
+with contents in the file.
+`.setpad buffer_name, <buffer size>  or .setpad buffer_name, <buffer file path>`
+All the buffers declared with this directive will be in .pad.<colnum> section in the elf.
+Example:
+```
+...
+.setpad save, 0x100
+.setpad ctrl_pkt, ctrlpkt.bin
+...
+```
+
+
+## .partition
+
+This directive is used to specify the size of a partition.
+
+|`.partition` | partition size information |
+|-| - |
+|-| string |
+
+Specify size of a partition where the design can run. Depending on whether the design is in single-app mode or dual-app mode, the size of partition can be specified in number of columns as `Xcolumn` or number of cores plus number of 256kB memtile chunks as `Ycore:Zmem`
+Example:
+```
+...
+;For a 3 column partition in single-app mode
+.partiton 3column
+;For 2 core plus 1.5MB memory partition in dual-app mode
+.partition 2core:6mem
+...
+```
+
+
+## .target
+
+This directive is used to specify the architecture platform where the control code runs
+
+|`.target` | <arch>-<sub-arch> |
+|-| - |
+|-| string |
+
+Specify the information of the target architecture. `arch` is aie architecture, i.e aie2ps or aie4. `sub-arch` is used to tell different version of the architecture, i.e a/b/z of aie4. `sub-arch` is optional
+Example:
+```
+...
+;For telluride
+.target aie2ps
+;For npu3
+.target aie4-a
+;For medusa
+.target aie4
+;For pacifica
+.target aie4-z
+...
+```
+
+
+## UC_DMA_BD
+
+In control code, the BD that needs to patch is defined by directive UC_DMA_BD
+
+|`UC_DMA_BD` | address high | address low | local address | length | external | next_bd |
+|-| - | - | - | - | - | - |
+|-| integer | integer | integer | integer | integer | integer |
+
+`address high`, always 0 in current generation of aie.
+`address low`, address of aie array register that uC-DMA is going to access.
+`local address` in sDM, it is a label in the data section of the page where the value of the BD registers are specified.
+`length` is the number of registers staring from the `remote address`.
+`external` flag, always 0.
+`next_bd` flag, this is to tell whether this is the last uC-DMA BD in the chain.
+Example:
+```
+  START_JOB 0
+    uC_DMA_WRITE_DES_SYNC    $r0, @uc_dma_bd0
+  END_JOB
+  .align           16
+  uc_dma_bd0:
+    UC_DMA_BD       0, 0x001A0000, @mem01_bd0, 8, 0, 1
+    UC_DMA_BD       0, 0x001A0020, @mem01_bd1, 8, 0, 1
+    UC_DMA_BD       0, 0x021A0000, @mem11_bd0, 8, 0, 0
+    ...
+```
+
+

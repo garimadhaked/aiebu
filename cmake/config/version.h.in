@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+#ifndef AIEBU_VERSION_H_
+#define AIEBU_VERSION_H_
+
+static const char aiebu_build_version[] = "@AIEBU_VERSION_STRING@";
+
+static const char aiebu_build_version_branch[] = "@AIEBU_BRANCH@";
+
+static const char aiebu_build_version_hash[] = "@AIEBU_HASH@";
+
+static const char aiebu_build_version_hash_date[] = "@AIEBU_HASH_DATE@";
+
+static const char aiebu_modified_files[] = "@AIEBU_MODIFIED_FILES@";
+
+static const char aiebu_boost_version_string[] = "@AIEBU_BOOST_VERSION_STRING@";
+
+static const char aiebu_regex_engine[] = "@AIEBU_REGEX_ENGINE@";
+
+static const char aiebu_cxx_compiler_id[] = "@AIEBU_CXX_COMPILER_ID@";
+
+static const char aiebu_cxx_compiler_version[] = "@AIEBU_CXX_COMPILER_VERSION@";
+
+static const char aiebu_build_type[] = "@AIEBU_BUILD_TYPE@";
+
+#define AIEBU_DRIVER_VERSION "@AIEBU_VERSION_STRING@,@AIEBU_HASH@"
+
+#define AIEBU_VERSION(major, minor) ((major << 16) + (minor))
+#define AIEBU_VERSION_CODE AIEBU_VERSION(@AIEBU_VERSION_MAJOR@, @AIEBU_VERSION_MINOR@)
+#define AIEBU_MAJOR(code) ((code >> 16))
+#define AIEBU_MINOR(code) (code - ((code >> 16) << 16))
+#define AIEBU_PATCH @AIEBU_VERSION_PATCH@
+#define AIEBU_HEAD_COMMITS @AIEBU_HEAD_COMMITS@
+#define AIEBU_BRANCH_COMMITS @AIEBU_BRANCH_COMMITS@
+
+#endif

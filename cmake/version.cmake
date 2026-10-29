@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+
+# AMD promotion build works from copied sources with no git
+# repository.  The build cannot query git for git metadata.  The
+# promotion build has explicitly overwritten config/version.h.in and
+# config/version.json.in with pre-generated ones.
+if (DEFINED ENV{DK_ROOT})
+
+  message("-- Skipping Git metadata")
+  set (AIEBU_BRANCH "NA")
+  set (AIEBU_HASH "NA")
+  set (AIEBU_HEAD_COMMITS -1)
+  set (AIEBU_BRANCH_COMMITS -1)
+  set (AIEBU_HASH_DATE "NA")
+  set (AIEBU_MODIFIED_FILES "NA")
+
+else (DEFINED ENV{DK_ROOT})
+
+# Get the branch
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  OUTPUT_VARIABLE AIEBU_BRANCH
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+#Set AIEBU_BRANCH_COMMITS to default value if above command is not executed
+if (NOT AIEBU_BRANCH)
+  set (AIEBU_BRANCH "NA")
+endif()
+
+# Get the latest abbreviated commit hash of the working branch
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} rev-parse --verify HEAD
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  OUTPUT_VARIABLE AIEBU_HASH
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+if (NOT AIEBU_HASH)
+  set (AIEBU_HASH "NA")
+endif()
+
+# Get number of commits for HEAD
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  OUTPUT_VARIABLE AIEBU_HEAD_COMMITS
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+#Set AIEBU_HEAD_COMMITS to default value if above command is not executed
+if (NOT AIEBU_HEAD_COMMITS)
+  set (AIEBU_HEAD_COMMITS -1)
+endif()
+
+# Get number of commits between HEAD and master
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD ^origin/main-ge
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  OUTPUT_VARIABLE AIEBU_BRANCH_COMMITS
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+#Set AIEBU_BRANCH_COMMITS to default value if above command is not executed
+if (NOT AIEBU_BRANCH_COMMITS)
+  set (AIEBU_BRANCH_COMMITS -1)
+endif()
+
+# Get the latest abbreviated commit hash date of the working branch
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} log -1 --pretty=format:%cD
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  OUTPUT_VARIABLE AIEBU_HASH_DATE
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+if (NOT AIEBU_HASH_DATE)
+  set (AIEBU_HASH_DATE "NA")
+endif()
+
+# Get all of the modified files in the current git environment
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} status --porcelain -u no
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  OUTPUT_VARIABLE AIEBU_MODIFIED_FILES
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+if (NOT AIEBU_MODIFIED_FILES)
+  set (AIEBU_MODIFIED_FILES "NA")
+endif()
+
+string(REPLACE "\n" "," AIEBU_MODIFIED_FILES "${AIEBU_MODIFIED_FILES}")
+
+endif(DEFINED ENV{DK_ROOT})
+
+set(AIEBU_BOOST_VERSION_STRING "${Boost_VERSION_STRING}")
+set(AIEBU_CXX_COMPILER_ID "${CMAKE_CXX_COMPILER_ID}")
+set(AIEBU_CXX_COMPILER_VERSION "${CMAKE_CXX_COMPILER_VERSION}")
+
+# Debug / Release / etc. at configure time (single-config), or multi-config summary.
+if(CMAKE_BUILD_TYPE)
+  set(AIEBU_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+elseif(CMAKE_CONFIGURATION_TYPES)
+  string(REPLACE ";" ", " _AIEBU_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}")
+  set(AIEBU_BUILD_TYPE "multi-config (${_AIEBU_CONFIGURATION_TYPES})")
+else()
+  set(AIEBU_BUILD_TYPE "unspecified")
+endif()
+
+configure_file(
+  ${AIEBU_SOURCE_DIR}/cmake/config/version.h.in
+  ${PROJECT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}/gen/version.h
+)
+
+configure_file(
+  ${AIEBU_SOURCE_DIR}/cmake/config/version.json.in
+  ${PROJECT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}/gen/version.json
+)

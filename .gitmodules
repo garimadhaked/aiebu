@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2024-2025 Advanced Micro Devices, Inc. All rights reserved.
+[submodule "src/cpp/ELFIO"]
+	path = src/cpp/ELFIO
+	url = https://github.com/serge1/ELFIO.git
+[submodule "src/cpp/cxxopts"]
+	path = src/cpp/cxxopts
+	url = https://github.com/jarro2783/cxxopts
+[submodule "src/cpp/zstd"]
+	path = src/cpp/zstd
+	url = https://github.com/facebook/zstd.git
